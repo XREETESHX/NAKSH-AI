@@ -23,7 +23,7 @@ os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 import litellm
 from litellm.caching.caching import Cache
-from fastapi import FastAPI, Header, HTTPException, Path as ApiPath
+from fastapi import FastAPI, Header, HTTPException, Path as ApiPath, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -122,7 +122,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="Lyftr AI Chat",
+    title="NAKSH AI",
     version="1.0.0",
     lifespan=lifespan,
     docs_url=None,
@@ -138,7 +138,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "X-Simulate-Failure"],
 )
 
@@ -306,6 +306,56 @@ async def chat(
     except (sqlite3.Error, OSError):
         raise HTTPException(status_code=503, detail="database unavailable")
     return {"session_id": payload.session_id, "reply": reply, "metadata": metadata}
+
+
+@app.get("/sessions")
+async def list_sessions(limit: int = Query(default=50, ge=1, le=100)) -> dict[str, Any]:
+    try:
+        with _database() as conn:
+            rows = conn.execute(
+                """SELECT s.session_id, s.created_at,
+                          (SELECT substr(m.content, 1, 120) FROM messages m
+                           WHERE m.session_id = s.session_id AND m.role = 'user'
+                           ORDER BY m.id ASC LIMIT 1) AS preview,
+                          (SELECT m.created_at FROM messages m
+                           WHERE m.session_id = s.session_id
+                           ORDER BY m.id DESC LIMIT 1) AS updated_at,
+                          (SELECT COUNT(*) FROM messages m
+                           WHERE m.session_id = s.session_id) AS message_count
+                   FROM sessions s
+                   WHERE EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.session_id)
+                   ORDER BY (SELECT MAX(m.id) FROM messages m
+                             WHERE m.session_id = s.session_id) DESC
+                   LIMIT ?""",
+                (limit,),
+            ).fetchall()
+    except (sqlite3.Error, OSError):
+        raise HTTPException(status_code=503, detail="database unavailable")
+    return {
+        "sessions": [
+            {
+                "session_id": row["session_id"],
+                "preview": row["preview"] or "Conversation",
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"] or row["created_at"],
+                "message_count": row["message_count"],
+            }
+            for row in rows
+        ]
+    }
+
+
+@app.delete("/sessions/{session_id}")
+async def delete_session(session_id: str = ApiPath(min_length=1, max_length=128)) -> dict[str, Any]:
+    try:
+        with _database() as conn:
+            exists = conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+            if exists:
+                conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+    except (sqlite3.Error, OSError):
+        raise HTTPException(status_code=503, detail="database unavailable")
+    return {"session_id": session_id, "deleted": bool(exists)}
 
 
 @app.get("/sessions/{session_id}/messages")

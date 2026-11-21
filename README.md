@@ -1,113 +1,138 @@
-# Lyftr AI Chat
+# NAKSH AI
 
-A full-stack, multi-turn AI chat app with LiteLLM exact-response caching, ordered API-key failover, per-request usage metadata, and SQLite-backed session history.
+NAKSH AI is a full-stack, multi-turn chat app. It uses React and Vite for the frontend, FastAPI for the backend, SQLite for saved conversations, and LiteLLM for model requests, exact-response caching, and API-key failover.
 
-## 1. Live URLs
+## Features
 
-- Frontend: not deployed yet. Set `VITE_API_BASE_URL` to the public backend URL when building the frontend.
-- Backend: not deployed yet. The service exposes `/health`, `/chat`, and `/sessions/{session_id}/messages`.
-- Public repository and demo video: add these after publishing the repository and recording the walkthrough.
+- Multi-turn AI chat with optional session instructions.
+- Saved conversation history: reopen a conversation or delete it from the sidebar.
+- Exact-response cache and ordered provider-key failover.
+- Per-response source, model, latency, and token metadata.
+- Health status, session ID copy, and Docker Compose setup.
 
-This workspace contains a deployment-ready project. It does not include provider keys, a hosting account, a public repository, or a recorded video, so public URLs cannot be claimed until those are configured.
+## Run locally with Docker Desktop
 
-## 2. Run locally: with Docker and without
+### Requirements
 
-### With Docker
+- Docker Desktop with Docker Compose enabled.
+- Two valid Gemini API keys. The app expects at least two keys so it can check backend health and demonstrate key failover.
 
-1. Copy `.env.example` to `.env` and set `LLM_API_KEYS` to at least two valid Gemini API keys. Keep the keys comma-separated and never commit `.env`. The stack can start without keys, but chat and health checks will stay unavailable until two are configured.
-2. Run `make up` from the repository root.
-3. Open the frontend at <http://localhost:3000>. The API is at <http://localhost:8000>.
-4. Stop the stack with `make down`.
+### Setup
 
-Docker Compose stores SQLite at `/data/app.db` on the named `lyftr_data` volume. The volume survives container restarts. `docker compose down -v` deletes it.
+Open PowerShell in the project folder and create a local environment file if you do not already have one:
 
-### Without Docker
+```powershell
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+notepad .env
+```
 
-The backend reads the repository-root `.env` file for local runs. Use `DATABASE_URL=sqlite:///./app.db` and include `http://localhost:5173` in `ALLOWED_ORIGINS` for the Vite dev server.
+Set `LLM_API_KEYS` to two comma-separated keys in `.env`. Keep the keys private and do not commit `.env`.
 
-Backend:
+```dotenv
+LLM_API_KEYS=your_first_key,your_second_key
+```
 
-```bash
-cd backend
-python -m venv .venv
-# Activate .venv, then:
-pip install -r requirements.txt
-export LLM_API_KEYS="key_one,key_two"
-export LLM_MODEL="gemini/gemini-3.8-flash"
-export DATABASE_URL="sqlite:///./app.db"
-export ALLOWED_ORIGINS="http://localhost:3000,http://localhost:5173"
-export ENABLE_FAILURE_SIMULATION="true"
+Start the app:
+
+```powershell
+docker compose up --build -d
+docker compose ps
+```
+
+Open the frontend at <http://localhost:3000>. Check the backend at <http://localhost:8000/health>.
+
+Stop the containers while keeping saved conversations:
+
+```powershell
+docker compose down
+```
+
+The SQLite database is stored in a named Docker volume. `docker compose down -v` also removes that volume and permanently deletes the saved conversations.
+
+## Use the app
+
+1. Select **New conversation** and type a question in the message box. Press Enter or click Send.
+2. Read the assistant answer and its response details: source (`LIVE_INFERENCE` or `LLM_CACHE`), model, latency, and token counts.
+3. Send a follow-up in the same conversation to continue the context.
+4. Select a conversation in the **History** list to reopen it.
+5. Click a history row’s trash icon to delete that conversation immediately. The deletion removes the conversation and its messages from SQLite.
+6. Use **System prompt** to add optional instructions for the current conversation. Starting a new conversation clears those instructions.
+
+To demonstrate the cache, ask the same first-turn question in a new conversation while the backend remains running. The second answer should show `LLM_CACHE`. The cache is local to the backend process and clears when that process restarts.
+
+## Configuration
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `LLM_API_KEYS` | Comma-separated Gemini keys; at least two are required for `/health` | Empty |
+| `LLM_MODEL` | LiteLLM model identifier | `gemini/gemini-3.5-flash-lite` |
+| `LLM_TIMEOUT_SECONDS` | Timeout for each provider-key attempt | `20` |
+| `DATABASE_URL` | SQLite database location | Compose sets `sqlite:////data/app.db` |
+| `ALLOWED_ORIGINS` | Frontend origins allowed by backend CORS | `http://localhost:3000` in Compose |
+| `ENABLE_FAILURE_SIMULATION` | Enables the test-only `X-Simulate-Failure` header | `true` in Compose |
+| `VITE_API_BASE_URL` | Backend URL baked into the frontend at build time | `http://localhost:8000` |
+
+Set `ENABLE_FAILURE_SIMULATION=false` in a production deployment. If `VITE_API_BASE_URL` changes, rebuild the frontend image because Vite reads this value at build time.
+
+## Run without Docker on Windows
+
+Use Python 3.11 or 3.12 and Node.js 22. In the first PowerShell window, from the repository root:
+
+```powershell
+python -m venv backend\.venv
+backend\.venv\Scripts\Activate.ps1
+pip install -r backend\requirements.txt -r backend\requirements-dev.txt
+$env:LLM_API_KEYS = "your_first_key,your_second_key"
+$env:LLM_MODEL = "gemini/gemini-3.5-flash-lite"
+$env:DATABASE_URL = "sqlite:///./app.db"
+$env:ALLOWED_ORIGINS = "http://localhost:3000,http://localhost:5173"
+$env:ENABLE_FAILURE_SIMULATION = "true"
+Set-Location backend
 uvicorn app.main:app --reload --port 8000
 ```
 
-On Windows PowerShell, use `$env:LLM_API_KEYS="key_one,key_two"` and the matching `$env:` form for each variable. Start the frontend in a second terminal:
+In a second PowerShell window, from the repository root:
 
-```bash
-cd frontend
-npm install
+```powershell
+Set-Location frontend
+npm ci
+$env:VITE_API_BASE_URL = "http://localhost:8000"
 npm run dev -- --host 0.0.0.0
 ```
 
-The Vite development server is available at <http://localhost:5173>. Add that origin to `ALLOWED_ORIGINS` for this mode. `VITE_API_BASE_URL` defaults to `http://localhost:8000`.
+Open <http://localhost:5173>. When using this mode, keep the backend's `ALLOWED_ORIGINS` set to include `http://localhost:5173`.
 
-## 3. Design decisions: key fallback, caching, SQLite session storage
+## Backend API
 
-- **Fallback:** `LLM_API_KEYS` is read in order and mapped to `key_1`, `key_2`, etc. LiteLLM is called once per key, with a 20-second timeout per attempt by default (`LLM_TIMEOUT_SECONDS`); a failed attempt advances to the next key. If all keys fail, the route returns `503 {"detail":"all providers unavailable"}`. Server logs include only the key ID, error class, and HTTP status, never the key or provider error text.
-- **Caching:** LiteLLM's local exact-match cache is enabled. The full model request, including system prompt and saved conversation history, is sent to LiteLLM. A recognized cache hit returns the cached reply and cached per-call usage with `resolution_source: "LLM_CACHE"`, `key_id: null`, and zero fallback attempts. Cache state is process-local, as required by the SQLite-only/no-Redis constraint.
-- **SQLite:** the app creates its `sessions` and `messages` tables and session index on startup. It stores the chosen system prompt separately from the visible history. User and assistant rows are committed only after a successful model response, so failed requests do not create a session or partial turn. System prompts are not returned by the history endpoint.
-- **Tokens and timing:** provider-reported prompt and completion usage is returned for this request, not accumulated over the session. A tokenizer fallback is used only if a provider omits usage. Latency is measured around the LiteLLM request.
-- **Simulation:** `X-Simulate-Failure` is honored only when `ENABLE_FAILURE_SIMULATION=true`. It skips matching keys for that request, allowing real model inference through the next healthy configured key.
-- **Model:** defaults to `gemini/gemini-3.5-flash-lite`, a lower-latency model for routine chat. `LLM_MODEL` can select another LiteLLM-supported model.
+- `GET /health` — backend, database, configured-key count, and cache status. Returns an error if fewer than two keys are configured.
+- `POST /chat` — send a message. Body: `{"session_id":"demo-1","message":"Hello"}`; optional `system_prompt` can be included.
+- `GET /sessions?limit=50` — list recent saved conversations (maximum 100).
+- `GET /sessions/{session_id}/messages` — retrieve one conversation's messages and assistant metadata.
+- `DELETE /sessions/{session_id}` — delete a conversation and its messages. Repeating a delete is safe.
 
-## 4. Verification: how to see failover, cache hits and per-message token usage
+The API documentation routes are disabled in this assignment build. The chat response includes `reply` and `metadata` fields.
 
-Install `backend/requirements-dev.txt`, then run `pytest` from `backend/` for the API contract, validation, session persistence, provider failover, simulation header, cache metadata, and error-history behavior. The tests mock model output and do not require API keys.
+## Run the backend tests
 
-With the app running and two real keys configured:
+From the repository root, after installing the development requirements:
 
-```bash
-curl http://localhost:8000/health
-curl -X POST http://localhost:8000/chat -H 'Content-Type: application/json' \
-  -d '{"session_id":"demo-1","message":"What is the capital of France?"}'
+```powershell
+Set-Location backend
+python -m pytest -q
 ```
 
-Repeat that same first message under a different session ID to see the exact cache hit. Its reply and token usage should match, `resolution_source` should be `LLM_CACHE`, and `key_id` should be `null`.
+The backend suite uses mocked model responses; it does not need live API keys. The frontend production build can be checked with `npm run build` from `frontend/`.
 
-Force the first key to fail while allowing the next real key to answer:
+## Troubleshooting
 
-```bash
-curl -X POST http://localhost:8000/chat -H 'Content-Type: application/json' \
-  -H 'X-Simulate-Failure: key_1=429' \
-  -d '{"session_id":"demo-fallback","message":"Give me a one sentence greeting."}'
-```
+- **The app says the backend is offline:** check `.env` has two valid, comma-separated keys, then run `docker compose logs --tail 100 backend`.
+- **Chat returns a provider error:** check the keys and provider quota; inspect backend logs without sharing the keys.
+- **Frontend cannot reach a deployed backend:** set `ALLOWED_ORIGINS` to the exact frontend origin and set `VITE_API_BASE_URL` to the backend base URL, then rebuild the frontend.
+- **A service cannot start:** check whether ports 3000 or 8000 are already in use with `docker compose ps` and inspect `docker compose logs --tail 100 frontend backend`.
+- **You want a fresh database:** `docker compose down -v` deletes all saved conversations along with the volume.
 
-The response should show `key_id: "key_2"` and one fallback attempt. Simulate total failure and verify no history was saved:
+## Deployment and submission status
 
-```bash
-curl -i -X POST http://localhost:8000/chat -H 'Content-Type: application/json' \
-  -H 'X-Simulate-Failure: *=429' \
-  -d '{"session_id":"demo-failed","message":"This turn should not be stored."}'
-curl -i http://localhost:8000/sessions/demo-failed/messages
-```
+Public source repository: [XREETESHX/NAKSH-AI](https://github.com/XREETESHX/NAKSH-AI).
 
-Assistant cards in the UI display resolution source, model, latency, input tokens, and output tokens for that reply. The history endpoint returns only user/assistant content and assistant metadata, oldest first.
-
-## 5. Setup Used: your editor and AI tools
-
-- Editor: Codex desktop workspace.
-- AI tools: OpenAI Codex.
-- Frameworks and libraries: React, Vite, FastAPI, LiteLLM, SQLite, Docker Compose.
-
-## 6. Bonus features (if any): what you added beyond the requirements and why
-
-- Optional session-level system prompt, persisted with the session but excluded from visible history.
-- UI health indicator, suggested prompts, session ID copy affordance, and an explicit fallback-recovered status.
-- Sessions table and transaction-safe turn writes to preserve prompt configuration and avoid partial history.
-
-## Deployment checklist
-
-1. Set `LLM_API_KEYS` in the backend host secret manager to two valid keys. Set `ENABLE_FAILURE_SIMULATION=true` as required by the assignment.
-2. Deploy the backend container with persistent storage mounted at `/data`; set `DATABASE_URL=sqlite:////data/app.db` and `ALLOWED_ORIGINS` to the exact public frontend origin.
-3. Build and deploy the frontend with `VITE_API_BASE_URL` set to the public backend base URL.
-4. Verify `/health`, a live chat, a repeated first-message cache hit, simulated key failover, and total simulated failure from the deployed URLs.
-5. Publish this project to a public GitHub repository and record a 2–3 minute demo. Replace the pending entries in “Live URLs” with the actual links.
+The project currently runs locally and does not have public frontend/backend deployment URLs or a recorded demo video. Do not present localhost addresses as public live URLs.
