@@ -1,4 +1,6 @@
 fastapi==0.121.3
 uvicorn[standard]==0.38.0
 litellm==1.106.0
+orjson>=3.10,<4
+soundfile>=0.12,<1
 python-dotenv>=1.0,<2.0

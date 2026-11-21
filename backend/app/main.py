@@ -240,11 +240,13 @@ async def _complete(messages: list[dict[str, str]], simulated: dict[str, int]) -
             # to diagnose a failing provider attempt.
             response = getattr(error, "response", None)
             status_code = getattr(error, "status_code", None) or getattr(response, "status_code", None)
+            missing_module = getattr(error, "name", None) if isinstance(error, ModuleNotFoundError) else None
             logger.warning(
-                "Provider attempt failed for %s (error_type=%s, status_code=%s)",
+                "Provider attempt failed for %s (error_type=%s, status_code=%s, missing_module=%s)",
                 key_id,
                 type(error).__name__,
                 status_code,
+                missing_module,
             )
             failures += 1
     raise HTTPException(status_code=503, detail="all providers unavailable")
