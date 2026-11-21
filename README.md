@@ -57,7 +57,7 @@ The Vite development server is available at <http://localhost:5173>. Add that or
 - **SQLite:** the app creates its `sessions` and `messages` tables and session index on startup. It stores the chosen system prompt separately from the visible history. User and assistant rows are committed only after a successful model response, so failed requests do not create a session or partial turn. System prompts are not returned by the history endpoint.
 - **Tokens and timing:** provider-reported prompt and completion usage is returned for this request, not accumulated over the session. A tokenizer fallback is used only if a provider omits usage. Latency is measured around the LiteLLM request.
 - **Simulation:** `X-Simulate-Failure` is honored only when `ENABLE_FAILURE_SIMULATION=true`. It skips matching keys for that request, allowing real model inference through the next healthy configured key.
-- **Model:** defaults to `gemini/gemini-3.8-flash`; `LLM_MODEL` can select another LiteLLM-supported model. Google has deprecated earlier Gemini generations, so the default follows its current Gemini developer model listings.
+- **Model:** defaults to `gemini/gemini-3.5-flash-lite`, a lower-latency model for routine chat. `LLM_MODEL` can select another LiteLLM-supported model.
 
 ## 4. Verification: how to see failover, cache hits and per-message token usage
 

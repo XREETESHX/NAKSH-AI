@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful, concise assistant. Answer accurately and ask a clarifying question when needed."
-MODEL = os.getenv("LLM_MODEL", "gemini/gemini-3.8-flash")
+MODEL = os.getenv("LLM_MODEL", "gemini/gemini-3.5-flash-lite")
 SIMULATION_ENABLED = os.getenv("ENABLE_FAILURE_SIMULATION", "false").strip().lower() == "true"
 logger = logging.getLogger(__name__)
 
