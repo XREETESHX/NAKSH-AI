@@ -22,6 +22,7 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 import litellm
+from litellm import Router
 from litellm.caching.caching import Cache
 from fastapi import FastAPI, Header, HTTPException, Path as ApiPath, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,6 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful, concise assistant. Answer accurately and ask a clarifying question when needed."
 MODEL = os.getenv("LLM_MODEL", "gemini/gemini-3.5-flash-lite")
+FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "gemini/gemini-3.5-flash")
 SIMULATION_ENABLED = os.getenv("ENABLE_FAILURE_SIMULATION", "false").strip().lower() == "true"
 logger = logging.getLogger(__name__)
 
@@ -47,12 +49,56 @@ def _parse_api_keys(raw: str) -> list[str]:
 
 API_KEYS = _parse_api_keys(os.getenv("LLM_API_KEYS", ""))
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./app.db")
+PRIMARY_MODEL_GROUP = "naksh-gemini-primary"
+FALLBACK_MODEL_GROUP = "naksh-gemini-fallback"
+_router: Router | None = None
+_router_keys: tuple[str, ...] = ()
 
 # LiteLLM's exact-match local cache is intentionally in-process: the assignment
 # forbids external cache services. It keys on the full request payload.
 litellm.cache = Cache(type="local")
 litellm.suppress_debug_info = True
 litellm.telemetry = False
+
+
+def _get_router() -> Router:
+    """Build LiteLLM deployments and let Router manage provider failover."""
+    global _router, _router_keys
+    keys = tuple(API_KEYS)
+    if len(keys) < 2:
+        raise HTTPException(status_code=503, detail="all providers unavailable")
+    if _router is None or _router_keys != keys:
+        timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "20"))
+        model_list = [
+            {
+                "model_name": PRIMARY_MODEL_GROUP,
+                "litellm_params": {
+                    "model": MODEL,
+                    "api_key": keys[0],
+                    "temperature": 0.3,
+                    "timeout": timeout,
+                },
+                "model_info": {"id": "key_1"},
+            },
+            {
+                "model_name": FALLBACK_MODEL_GROUP,
+                "litellm_params": {
+                    "model": FALLBACK_MODEL,
+                    "api_key": keys[1],
+                    "temperature": 0.3,
+                    "timeout": timeout,
+                },
+                "model_info": {"id": "key_2"},
+            },
+        ]
+        _router = Router(
+            model_list=model_list,
+            fallbacks=[{PRIMARY_MODEL_GROUP: [FALLBACK_MODEL_GROUP]}],
+            num_retries=1,
+            timeout=timeout,
+        )
+        _router_keys = keys
+    return _router
 
 
 def _database_path(url: str) -> str:
@@ -188,68 +234,60 @@ def _usage_value(usage: Any, primary: str, alternate: str) -> int | None:
 async def _complete(messages: list[dict[str, str]], simulated: dict[str, int]) -> tuple[str, dict[str, Any]]:
     if len(API_KEYS) < 2:
         raise HTTPException(status_code=503, detail="all providers unavailable")
+    if "*" in simulated or ("key_1" in simulated and "key_2" in simulated):
+        raise HTTPException(status_code=503, detail="all providers unavailable")
 
     request_started = time.perf_counter()
-    failures = 0
-    for index, key in enumerate(API_KEYS, start=1):
-        key_id = f"key_{index}"
-        if "*" in simulated or key_id in simulated:
-            failures += 1
-            continue
-        try:
-            response = await litellm.acompletion(
-                model=MODEL,
-                messages=messages,
-                api_key=key,
-                temperature=0.3,
-                caching=True,
-                num_retries=0,
-                timeout=float(os.getenv("LLM_TIMEOUT_SECONDS", "20")),
-            )
-            elapsed_ms = max(0, int((time.perf_counter() - request_started) * 1000))
-            reply = str(response.choices[0].message.content or "").strip()
-            if not reply:
-                raise RuntimeError("provider returned an empty response")
-            hidden = getattr(response, "_hidden_params", {}) or {}
-            cache_hit = bool(hidden.get("cache_hit", False))
-            usage = getattr(response, "usage", None)
-            input_tokens = _usage_value(usage, "prompt_tokens", "input_tokens")
-            output_tokens = _usage_value(usage, "completion_tokens", "output_tokens")
-            if input_tokens is None:
-                try:
-                    input_tokens = litellm.token_counter(model=MODEL, messages=messages)
-                except Exception:
-                    input_tokens = max(1, sum(len(message["content"]) for message in messages) // 4)
-            if output_tokens is None:
-                try:
-                    output_tokens = litellm.token_counter(model=MODEL, text=reply)
-                except Exception:
-                    output_tokens = max(1, len(reply) // 4)
-            return reply, {
-                "resolution_source": "LLM_CACHE" if cache_hit else "LIVE_INFERENCE",
-                "model": MODEL,
-                "latency_ms": elapsed_ms,
-                "input_tokens": int(input_tokens),
-                "output_tokens": int(output_tokens),
-                "key_id": None if cache_hit else key_id,
-                "fallback_attempts": 0 if cache_hit else failures,
-            }
-        except Exception as error:
-            # Keep credentials and provider messages out of both client responses
-            # and logs; the key id, exception class, and HTTP status are enough
-            # to diagnose a failing provider attempt.
-            response = getattr(error, "response", None)
-            status_code = getattr(error, "status_code", None) or getattr(response, "status_code", None)
-            missing_module = getattr(error, "name", None) if isinstance(error, ModuleNotFoundError) else None
-            logger.warning(
-                "Provider attempt failed for %s (error_type=%s, status_code=%s, missing_module=%s)",
-                key_id,
-                type(error).__name__,
-                status_code,
-                missing_module,
-            )
-            failures += 1
-    raise HTTPException(status_code=503, detail="all providers unavailable")
+    try:
+        response = await _get_router().acompletion(
+            model=PRIMARY_MODEL_GROUP,
+            messages=messages,
+            caching=not bool(simulated),
+            mock_testing_fallbacks="key_1" in simulated,
+        )
+        elapsed_ms = max(0, int((time.perf_counter() - request_started) * 1000))
+        reply = str(response.choices[0].message.content or "").strip()
+        if not reply:
+            raise RuntimeError("provider returned an empty response")
+        hidden = getattr(response, "_hidden_params", {}) or {}
+        cache_hit = bool(hidden.get("cache_hit", False))
+        deployment_id = hidden.get("model_id")
+        key_id = deployment_id if deployment_id in {"key_1", "key_2"} else "key_1"
+        usage = getattr(response, "usage", None)
+        input_tokens = _usage_value(usage, "prompt_tokens", "input_tokens")
+        output_tokens = _usage_value(usage, "completion_tokens", "output_tokens")
+        if input_tokens is None:
+            try:
+                input_tokens = litellm.token_counter(model=MODEL, messages=messages)
+            except Exception:
+                input_tokens = max(1, sum(len(message["content"]) for message in messages) // 4)
+        if output_tokens is None:
+            try:
+                output_tokens = litellm.token_counter(model=MODEL, text=reply)
+            except Exception:
+                output_tokens = max(1, len(reply) // 4)
+        return reply, {
+            "resolution_source": "LLM_CACHE" if cache_hit else "LIVE_INFERENCE",
+            "model": getattr(response, "model", None) or MODEL,
+            "latency_ms": elapsed_ms,
+            "input_tokens": int(input_tokens),
+            "output_tokens": int(output_tokens),
+            "key_id": None if cache_hit else key_id,
+            "fallback_attempts": 0 if cache_hit or key_id == "key_1" else 1,
+        }
+    except Exception as error:
+        # Keep credentials and provider messages out of both client responses
+        # and logs while retaining enough detail to diagnose a routing failure.
+        response = getattr(error, "response", None)
+        status_code = getattr(error, "status_code", None) or getattr(response, "status_code", None)
+        missing_module = getattr(error, "name", None) if isinstance(error, ModuleNotFoundError) else None
+        logger.warning(
+            "LiteLLM Router request failed (error_type=%s, status_code=%s, missing_module=%s)",
+            type(error).__name__,
+            status_code,
+            missing_module,
+        )
+        raise HTTPException(status_code=503, detail="all providers unavailable") from None
 
 
 @app.get("/health")
@@ -261,7 +299,13 @@ async def health() -> dict[str, Any]:
             conn.execute("SELECT 1").fetchone()
     except (sqlite3.Error, OSError):
         raise HTTPException(status_code=503, detail="database unavailable")
-    return {"status": "ok", "keys_configured": len(API_KEYS), "cache_enabled": True}
+    return {
+        "status": "ok",
+        "keys_configured": len(API_KEYS),
+        "cache_enabled": True,
+        "fallback_enabled": True,
+        "routing": "litellm_router",
+    }
 
 
 @app.post("/chat")

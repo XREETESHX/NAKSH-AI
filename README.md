@@ -8,6 +8,8 @@ NAKSH AI is a full-stack chat application with a React and TypeScript frontend, 
 - Reopen or delete saved conversations
 - Optional system prompt for each conversation
 - Response metadata, including model, source, latency, and token counts
+- LiteLLM Router failover between two Gemini deployments
+- LiteLLM response caching for identical requests
 - Health endpoint and Docker Compose setup
 
 ## Requirements
@@ -24,7 +26,7 @@ Copy-Item .env.example .env
 notepad .env
 ```
 
-Set `LLM_API_KEYS` in `.env` to two comma-separated Gemini API keys. Keep this file private; it is excluded from Git.
+Set `LLM_API_KEYS` in `.env` to two comma-separated Gemini API keys. LiteLLM Router sends requests to the primary deployment and routes failures to the second key on the fallback model. LiteLLM's in-process cache stores successful responses for identical requests. Keep `.env` private; it is excluded from Git.
 
 Start the app:
 
@@ -48,6 +50,7 @@ The database is stored in a Docker volume. To remove it and all saved conversati
 | --- | --- | --- |
 | `LLM_API_KEYS` | Two comma-separated Gemini API keys | — |
 | `LLM_MODEL` | LiteLLM model name | `gemini/gemini-3.5-flash-lite` |
+| `LLM_FALLBACK_MODEL` | LiteLLM model used by the second-key fallback deployment | `gemini/gemini-3.5-flash` |
 | `LLM_TIMEOUT_SECONDS` | Timeout per provider attempt | `20` |
 | `DATABASE_URL` | SQLite connection URL | Compose uses `sqlite:////data/app.db` |
 | `ALLOWED_ORIGINS` | Allowed frontend origins | `http://localhost:3000` |

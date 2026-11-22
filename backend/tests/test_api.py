@@ -37,7 +37,13 @@ def client(tmp_path, monkeypatch):
 
 
 def test_health_and_chat_history(client):
-    assert client.get("/health").json() == {"status": "ok", "keys_configured": 2, "cache_enabled": True}
+    assert client.get("/health").json() == {
+        "status": "ok",
+        "keys_configured": 2,
+        "cache_enabled": True,
+        "fallback_enabled": True,
+        "routing": "litellm_router",
+    }
     assert client.get("/openapi.json").status_code == 404
     assert client.get("/docs").status_code == 404
     first = client.post("/chat", json={"session_id": "s-1", "message": "What is the capital of France?"})
@@ -129,7 +135,7 @@ def test_simulated_fallback_and_total_failure_leave_no_history(client, monkeypat
         return SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="Real generated answer."))],
             usage=SimpleNamespace(prompt_tokens=10, completion_tokens=4),
-            _hidden_params={"cache_hit": False},
+            _hidden_params={"cache_hit": False, "model_id": "key_2"},
         )
 
     monkeypatch.setattr(main.litellm, "acompletion", fake_acompletion)
@@ -187,7 +193,10 @@ def test_provider_exception_fails_over_to_next_key(monkeypatch):
         return SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="Recovered reply."))],
             usage=SimpleNamespace(prompt_tokens=12, completion_tokens=3),
-            _hidden_params={"cache_hit": False},
+            _hidden_params={
+                "cache_hit": False,
+                "model_id": "key_1" if kwargs["api_key"] == "first-secret" else "key_2",
+            },
         )
 
     monkeypatch.setattr(main.litellm, "acompletion", fake_acompletion)
